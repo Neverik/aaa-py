@@ -25,7 +25,6 @@ def render_one(file_handle, code_dir, index) -> str:
                                bjs=json.dumps(book_json))
     return rendered
 
-
 def render_chapter(chapter):
     os.mkdir(f"{o_name}/{contents_name}/{chapter}")
     md_file: str = next(filter(lambda a: a.endswith(".md"), os.listdir(f"{contents_name}/{chapter}")))
@@ -48,8 +47,62 @@ def render_chapter(chapter):
     except FileNotFoundError:
         pass
 
+def parse_summary():
+    with open(summary_name) as s:
+        summary = s.read()
+    summary = summary.replace(".md", ".html")\
+                     .replace("(contents", "(/contents")\
+                     .replace('* ', '')\
+                     .replace('README', '/index')
 
+    summary_parsed = []
+    for index, line in enumerate(summary.split('\n')[2:-1]):
+        indent, rest = line.split('[')
+        name, link = rest.split('](')
+        link = link[:-1]
+        current_indent = len(indent) // summary_indent_level
+        summary_parsed.append((name, link, current_indent))
+    return summary_parsed
+    
+
+def clone_archive():
+    with open("aaa-repo.zip", "wb") as f:
+        response = requests.get(aaa_origin, stream=True)
+        total_length = response.headers.get('content-length')
+        if total_length is None:
+            f.write(response.content)
+        else:
+            dl = 0
+            total_length = int(total_length)
+            for data in response.iter_content(chunk_size=4096):
+                dl += len(data)
+                f.write(data)
+                done = int(50 * dl / total_length)
+                sys.stdout.write("\r[%s%s]" % ('=' * done, ' ' * (50 - done)))
+                sys.stdout.flush()
+                
+    print("Cloned, extracting...")
+    with zipfile.ZipFile("aaa-repo.zip", 'r') as origin_zip:
+        origin_zip.extractall("aaa-repo-all")
+    shutil.move(f"aaa-repo-all/{aaa_repo_path}", "aaa-repo")
+
+    print("Cleanup...")
+    shutil.rmtree("aaa-repo-all")
+    os.remove("aaa-repo.zip")
+
+    print("Cleaned up, moving...")
+    
+    for file, name in import_files.items():
+        print(f"Moving {file}...")
+        shutil.move(os.path.join("aaa-repo", file), name)
+
+    print("Cleanup...")
+    shutil.rmtree("aaa-repo")
+
+    print("Cleanup successful, building...")
+    
 if __name__ == '__main__':
+    
     print("Detecting if contents present...")
     do_clone = False
     for file in import_files:
@@ -57,42 +110,10 @@ if __name__ == '__main__':
             do_clone = True
     if do_clone:
         print("No contents present, cloning...")
-        with open("aaa-repo.zip", "wb") as f:
-            response = requests.get(aaa_origin, stream=True)
-            total_length = response.headers.get('content-length')
-            if total_length is None:
-                f.write(response.content)
-            else:
-                dl = 0
-                total_length = int(total_length)
-                for data in response.iter_content(chunk_size=4096):
-                    dl += len(data)
-                    f.write(data)
-                    done = int(50 * dl / total_length)
-                    sys.stdout.write("\r[%s%s]" % ('=' * done, ' ' * (50 - done)))
-                    sys.stdout.flush()
-
-        print("Cloned, extracting...")
-        with zipfile.ZipFile("aaa-repo.zip", 'r') as origin_zip:
-            origin_zip.extractall("aaa-repo-all")
-        shutil.move(f"aaa-repo-all/{aaa_repo_path}", "aaa-repo")
-
-        print("Cleanup...")
-        shutil.rmtree("aaa-repo-all")
-        os.remove("aaa-repo.zip")
-
-        print("Cleaned up, moving...")
-
-        for file, name in import_files.items():
-            print(f"Moving {file}...")
-            shutil.move(os.path.join("aaa-repo", file), name)
-
-        print("Cleanup...")
-        shutil.rmtree("aaa-repo")
-
-        print("Cleanup successful, building...")
+        clone_archive()
     else:
         print("Contents exists, building...")
+        
     try:
         print("Trying to create _book directory...")
         os.mkdir(o_name)
@@ -119,31 +140,19 @@ if __name__ == '__main__':
     os.system(f"pygmentize -S {pygment_theme} -f html -a .codehilite > {o_name}/pygments.css")
 
     print("Parsing SUMMARY.md...")
-    with open(summary_name) as s:
-        summary = s.read()
-    summary = summary.replace(".md", ".html")\
-                     .replace("(contents", "(/contents")\
-                     .replace('* ', '')\
-                     .replace('README', '/index')
-    summary_parsed = []
-    for index, line in enumerate(summary.split('\n')[2:-1]):
-        indent, rest = line.split('[')
-        name, link = rest.split('](')
-        link = link[:-1]
-        current_indent = len(indent) // summary_indent_level
-        summary_parsed.append((name, link, current_indent))
-    summary = summary_parsed
-
+    summary = parse_summary() 
+    
     print("Opening bibtex...")
     bib_database = pybtex.database.parse_file("literature.bib")
 
+    # Both book_json and renderer are global variables needed to render a chapter.
     print("Opening book.json...")
     with open("book.json") as bjs:
         book_json = json.load(bjs)
 
     print("Creating rendering pipeline...")
     renderer = get_ext(bib_database, pygment_theme, md)
-
+    
     print("Rendering chapters...")
     Pool(num_workers).map(render_chapter, chapters)
 
@@ -156,12 +165,12 @@ if __name__ == '__main__':
     print("Parsing redirects...")
     with open("redirects.json") as rjs_file:
         rjs = json.load(rjs_file)
+    
     rjs = {i["from"]:i["to"] for i in rjs["redirects"]}
     with open(f"{o_name}/redirects.json", 'w') as rjs_file:
         json.dump(rjs, rjs_file)
 
     print("Rendering index...")
-    with open(index_name, 'r') as readme:
-        with open(f"{o_name}/index.html", 'w') as index:
+    with open(index_name, 'r') as readme, open(f"{o_name}/index.html", 'w') as index:
             index.write(render_one(readme, f"{o_name}/", 0))
     print("Done!")
